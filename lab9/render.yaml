@@ -1,0 +1,19 @@
+databases:
+  - name: lab9-library-db
+    plan: free
+    databaseName: library
+    user: library
+
+services:
+  - type: web
+    name: lab9-library-api
+    runtime: docker
+    plan: free
+    rootDir: lab9
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: lab9-library-db
+          property: connectionString

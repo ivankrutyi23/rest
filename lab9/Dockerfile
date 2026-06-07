@@ -8,8 +8,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 EXPOSE 8000
+ENV PORT=8000
 
 HEALTHCHECK --interval=5s --timeout=5s --retries=10 \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/')" || exit 1
+  CMD python -c "import os, urllib.request; urllib.request.urlopen(f'http://localhost:{os.environ[\"PORT\"]}/')" || exit 1
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD uvicorn main:app --host 0.0.0.0 --port ${PORT}
