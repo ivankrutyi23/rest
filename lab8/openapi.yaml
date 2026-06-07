@@ -1,0 +1,574 @@
+openapi: 3.0.3
+
+info:
+  title: Book Catalog API
+  description: |
+    A RESTful API for managing a digital book catalog.
+
+    **Capabilities:**
+    - JWT-based authentication with access and refresh token rotation
+    - Offset-based pagination for browsing large collections
+    - Filtering by availability status, author name, and minimum page count
+    - Sorting by title or publication year
+    - Sliding-window rate limiting powered by Redis
+  version: "1.0.0"
+
+servers:
+  - url: http://localhost:4010
+    description: Prism Mock Server (design-first development)
+
+tags:
+  - name: auth
+    description: User registration, authentication, and token lifecycle
+  - name: books
+    description: CRUD operations for the book catalog
+
+security:
+  - BearerAuth: []
+
+paths:
+
+  /auth/register:
+    post:
+      tags: [auth]
+      summary: Create a new user account
+      security: []
+      operationId: registerUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserRegister'
+            example:
+              username: john_doe
+              password: securepass1
+      responses:
+        '201':
+          description: Account successfully created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserOut'
+              example:
+                id: 7f000001-3a2b-1000-b000-000000000001
+                username: john_doe
+                is_active: true
+        '409':
+          description: Username is already registered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                detail: Username already taken
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /auth/login:
+    post:
+      tags: [auth]
+      summary: Authenticate and obtain JWT tokens
+      description: |
+        Validates credentials and returns a short-lived access token (45 min)
+        plus a long-lived refresh token (14 days).
+        Subject to rate limiting: 3 requests/min unauthenticated.
+      security: []
+      operationId: loginUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+            example:
+              username: john_doe
+              password: securepass1
+      responses:
+        '200':
+          description: Authentication successful, tokens returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+              example:
+                access_token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.access.sample
+                refresh_token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.refresh.sample
+                token_type: bearer
+        '401':
+          description: Invalid credentials provided
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                detail: Wrong username or password
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /auth/refresh:
+    post:
+      tags: [auth]
+      summary: Exchange refresh token for a new token pair
+      description: |
+        Accepts a valid refresh token and issues a new access/refresh pair.
+        The submitted refresh token is immediately invalidated (rotation).
+      security: []
+      operationId: refreshToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshRequest'
+            example:
+              refresh_token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.refresh.sample
+      responses:
+        '200':
+          description: New token pair issued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '401':
+          description: Refresh token is expired or invalid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                detail: Token is invalid or has expired
+
+  /auth/logout:
+    post:
+      tags: [auth]
+      summary: Revoke a refresh token
+      security: []
+      operationId: logoutUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshRequest'
+      responses:
+        '200':
+          description: Token successfully revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+              example:
+                message: Logged out
+
+  /books/:
+    get:
+      tags: [books]
+      summary: Browse the book catalog
+      description: |
+        Returns a paginated list of books. Public endpoint — no authentication needed.
+        Rate limit applies: 3 req/min for anonymous, 15 req/min for authenticated users.
+      security: []
+      operationId: listBooks
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: Restrict results to a given availability status
+          schema:
+            type: string
+            enum: [free, on_loan]
+          example: free
+        - name: author
+          in: query
+          required: false
+          description: Search by author name (partial match, case-insensitive)
+          schema:
+            type: string
+          example: Franko
+        - name: pages_min
+          in: query
+          required: false
+          description: Only return books with at least this many pages
+          schema:
+            type: integer
+            minimum: 1
+          example: 200
+        - name: sort_by
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [title, year]
+          example: title
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 10
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        '200':
+          description: Paginated list of books
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookListOut'
+              example:
+                items:
+                  - id: 7f000001-3a2b-1000-b000-000000000010
+                    title: Lisova pisnia
+                    author: Lesia Ukrainka
+                    year: 1911
+                    pages: 180
+                    summary: A dramatic poem
+                    status: free
+                  - id: 7f000001-3a2b-1000-b000-000000000011
+                    title: Eneyida
+                    author: Ivan Kotlyarevsky
+                    year: 1798
+                    pages: null
+                    summary: null
+                    status: on_loan
+                total: 2
+                limit: 10
+                offset: 0
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+    post:
+      tags: [books]
+      summary: Add a book to the catalog
+      description: Authentication required. Any active user may add new entries.
+      operationId: createBook
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BookIn'
+            examples:
+              drama:
+                summary: Drama play
+                value:
+                  title: Lisova pisnia
+                  author: Lesia Ukrainka
+                  year: 1911
+                  pages: 180
+                  summary: A dramatic poem in three acts
+                  status: free
+              prose:
+                summary: Prose without page count
+                value:
+                  title: Shadows of Forgotten Ancestors
+                  author: Mykhailo Kotsiubynsky
+                  year: 1912
+                  status: on_loan
+      responses:
+        '201':
+          description: Book created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Book'
+              example:
+                id: 7f000001-3a2b-1000-b000-000000000010
+                title: Lisova pisnia
+                author: Lesia Ukrainka
+                year: 1911
+                pages: 180
+                summary: A dramatic poem
+                status: free
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /books/{book_id}:
+    get:
+      tags: [books]
+      summary: Retrieve a single book by identifier
+      security: []
+      operationId: getBook
+      parameters:
+        - $ref: '#/components/parameters/BookId'
+      responses:
+        '200':
+          description: Book data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Book'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+    delete:
+      tags: [books]
+      summary: Remove a book (idempotent)
+      description: Authentication required. Returns 204 regardless of whether the book existed.
+      operationId: deleteBook
+      parameters:
+        - $ref: '#/components/parameters/BookId'
+      responses:
+        '204':
+          description: Removed successfully
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+components:
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    BookId:
+      name: book_id
+      in: path
+      required: true
+      description: Unique identifier (UUID) of the book
+      schema:
+        type: string
+        format: uuid
+        example: 7f000001-3a2b-1000-b000-000000000010
+
+  schemas:
+
+    Book:
+      type: object
+      required: [id, title, author, year, status]
+      properties:
+        id:
+          type: string
+          format: uuid
+          readOnly: true
+          example: 7f000001-3a2b-1000-b000-000000000010
+        title:
+          type: string
+          example: Lisova pisnia
+        author:
+          type: string
+          example: Lesia Ukrainka
+        year:
+          type: integer
+          example: 1911
+        pages:
+          type: integer
+          nullable: true
+          example: 180
+        summary:
+          type: string
+          nullable: true
+          example: A dramatic poem in three acts
+        status:
+          type: string
+          enum: [free, on_loan]
+          example: free
+
+    BookIn:
+      type: object
+      required: [title, author, year]
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 255
+          example: Lisova pisnia
+        author:
+          type: string
+          minLength: 1
+          maxLength: 255
+          example: Lesia Ukrainka
+        year:
+          type: integer
+          minimum: 1000
+          maximum: 2100
+          example: 1911
+        pages:
+          type: integer
+          minimum: 1
+          maximum: 10000
+          nullable: true
+          example: 180
+        summary:
+          type: string
+          maxLength: 1000
+          nullable: true
+          example: A dramatic poem in three acts
+        status:
+          type: string
+          enum: [free, on_loan]
+          default: free
+          example: free
+
+    BookListOut:
+      type: object
+      required: [items, total, limit, offset]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Book'
+        total:
+          type: integer
+          example: 25
+        limit:
+          type: integer
+          example: 10
+        offset:
+          type: integer
+          example: 0
+
+    UserRegister:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+          minLength: 3
+          maxLength: 100
+          example: john_doe
+        password:
+          type: string
+          minLength: 6
+          example: securepass1
+
+    UserOut:
+      type: object
+      required: [id, username, is_active]
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: 7f000001-3a2b-1000-b000-000000000001
+        username:
+          type: string
+          example: john_doe
+        is_active:
+          type: boolean
+          example: true
+
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+          example: john_doe
+        password:
+          type: string
+          example: securepass1
+
+    TokenResponse:
+      type: object
+      required: [access_token, refresh_token, token_type]
+      properties:
+        access_token:
+          type: string
+          description: Short-lived token, expires in 45 minutes
+          example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.access.sample
+        refresh_token:
+          type: string
+          description: Long-lived token, valid for 14 days
+          example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.refresh.sample
+        token_type:
+          type: string
+          example: bearer
+
+    RefreshRequest:
+      type: object
+      required: [refresh_token]
+      properties:
+        refresh_token:
+          type: string
+          example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.refresh.sample
+
+    Error:
+      type: object
+      properties:
+        detail:
+          type: string
+          example: Resource not found
+
+    ValidationError:
+      type: object
+      properties:
+        detail:
+          type: array
+          items:
+            type: object
+            properties:
+              loc:
+                type: array
+                items:
+                  oneOf:
+                    - type: string
+                    - type: integer
+              msg:
+                type: string
+              type:
+                type: string
+
+  responses:
+
+    Unauthorized:
+      description: Missing or invalid bearer token
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            detail: Authorization required
+
+    NotFound:
+      description: Requested resource does not exist
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            detail: Not found
+
+    UnprocessableEntity:
+      description: Request body or parameters failed validation
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ValidationError'
+
+    TooManyRequests:
+      description: Client has exceeded the rate limit
+      headers:
+        Retry-After:
+          description: Number of seconds to wait before retrying
+          schema:
+            type: integer
+            example: 60
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            detail: Rate limit exceeded. Try again in 55 seconds.
